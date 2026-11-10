@@ -1,0 +1,36 @@
+{
+  "6288212580": {
+    "first_name": "H",
+    "username": "Uhgscn",
+    "joined_at": "2026-11-09 15:39:09",
+    "last_active": "2026-11-09 22:23:25",
+    "usage_count": 4,
+    "used_in_cycle": 0,
+    "total_used": 14,
+    "shares_count": 3,
+    "invited_count": 1,
+    "points": 2
+  },
+  "6181150735": {
+    "first_name": "إبن اليمن",
+    "username": "Yemen2026m",
+    "joined_at": "2026-11-09 15:45:59",
+    "last_active": "2026-11-09 22:23:12",
+    "usage_count": 3,
+    "used_in_cycle": 0,
+    "points": 10,
+    "lang": "ar"
+  },
+  "1646228173": {
+    "first_name": "Hesham",
+    "username": "Hesham2022m",
+    "joined_at": "2026-11-09 16:18:55",
+    "last_active": "2026-11-09 16:22:58",
+    "used_in_cycle": 3,
+    "total_used": 3,
+    "invited_by": "6288212580",
+    "referral_rewarded": true,
+    "invited_count": 0,
+    "lang": "ar"
+  }
+}

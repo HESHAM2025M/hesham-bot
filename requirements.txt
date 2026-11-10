@@ -2,4 +2,3 @@ python-telegram-bot>=20.0
 yt-dlp
 SpeechRecognition
 youtube-transcript-api
-standard-aifc

@@ -56,6 +56,7 @@ DATA_FILE = BASE_DIR / "users.json"
 ADMIN_FILE = BASE_DIR / "admin.json"
 SUPPORT_MAP_FILE = BASE_DIR / "support_map.json"
 ADMIN_REPLY_IDS_FILE = BASE_DIR / "admin_reply_ids.json"
+COOKIE_FILE = BASE_DIR / "cookies.txt"
 
 DEFAULT_CONFIG = {
     "initial_points": 10,
@@ -887,11 +888,14 @@ def extract_video_info(url: str):
         'no_check_certificate': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web']
+                'player_client': ['ios', 'android'],
+                'player_skip': ['webpage', 'configs']
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
+    if COOKIE_FILE.exists():
+        ydl_opts['cookiefile'] = str(COOKIE_FILE)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         
@@ -1692,11 +1696,14 @@ def download_video_sync(url: str, output_path: str):
         'http_chunk_size': 10485760,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web']
+                'player_client': ['ios', 'android'],
+                'player_skip': ['webpage', 'configs']
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
+    if COOKIE_FILE.exists():
+        ydl_opts['cookiefile'] = str(COOKIE_FILE)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
@@ -1714,11 +1721,14 @@ def download_mp3_sync(url: str, output_path: str):
         'concurrent_fragment_downloads': 5,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web']
+                'player_client': ['ios', 'android'],
+                'player_skip': ['webpage', 'configs']
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
+    if COOKIE_FILE.exists():
+        ydl_opts['cookiefile'] = str(COOKIE_FILE)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
