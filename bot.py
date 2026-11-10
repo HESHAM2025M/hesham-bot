@@ -885,6 +885,12 @@ def extract_video_info(url: str):
         'extract_flat': False,
         'socket_timeout': 15,
         'no_check_certificate': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -1684,6 +1690,12 @@ def download_video_sync(url: str, output_path: str):
         'concurrent_fragment_downloads': 5,
         'buffersize': 1024 * 64,
         'http_chunk_size': 10485760,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -1700,6 +1712,12 @@ def download_mp3_sync(url: str, output_path: str):
         'quiet': True,
         'ffmpeg_location': FFMPEG_PATH,
         'concurrent_fragment_downloads': 5,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
