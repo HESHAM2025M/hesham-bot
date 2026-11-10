@@ -1971,6 +1971,29 @@ async def post_init(application):
     await application.bot.set_my_commands(commands)
     print("Bot commands registered successfully!", flush=True)
 
+class RenderHealthServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Hesham Clip Bot is running 24/7!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+def start_render_health_check():
+    port = int(os.environ.get("PORT", 10000))
+    try:
+        server = HTTPServer(("0.0.0.0", port), RenderHealthServer)
+        print(f"Health check HTTP server started on port {port}", flush=True)
+        server.serve_forever()
+    except Exception as e:
+        print(f"HTTP Server note: {e}", flush=True)
+
 def main():
     print(f"Starting Hesham Clip Bot (Seamless 2-Way Chat, Direct Reply Buttons, Complete Decoupling)...", flush=True)
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
@@ -2039,29 +2062,6 @@ def main():
 
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, media_support_or_broadcast_catcher))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_or_text))
-
-class RenderHealthServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"Hesham Clip Bot is running 24/7!")
-
-    def do_HEAD(self):
-        self.send_response(200)
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        return
-
-def start_render_health_check():
-    port = int(os.environ.get("PORT", 10000))
-    try:
-        server = HTTPServer(("0.0.0.0", port), RenderHealthServer)
-        print(f"Health check HTTP server started on port {port}", flush=True)
-        server.serve_forever()
-    except Exception as e:
-        print(f"HTTP Server note: {e}", flush=True)
 
     # Start health check server on background thread for Render Web Service
     if os.environ.get("PORT") or os.environ.get("RENDER"):
