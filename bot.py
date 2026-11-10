@@ -7,6 +7,7 @@ import shutil
 import asyncio
 import threading
 import subprocess
+import concurrent.futures
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from pathlib import Path
@@ -1289,11 +1290,37 @@ async def handle_url_or_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     hint = "Please send a valid video URL (starting with http/https) or choose from the menu below." if lang == "en" else "يرجى إرسال رابط فيديو صالح (يبدأ بـ http أو https) أو استخدام أزرار القائمة بالأسفل."
     await update.message.reply_text(hint)
 
-# High Accuracy Speech Recognition with Chunking & Fast Preprocessing
+# Parallel Unlimited-Length Speech Recognition via FFmpeg Segments
+def transcribe_single_chunk(chunk_path: str, primary_lang: str, fallback_lang: str) -> str:
+    r = sr.Recognizer()
+    try:
+        with sr.AudioFile(chunk_path) as source:
+            audio_data = r.record(source)
+        if not audio_data.frame_data:
+            return ""
+        for _attempt in range(2):
+            try:
+                return r.recognize_google(audio_data, language=primary_lang)
+            except sr.UnknownValueError:
+                try:
+                    return r.recognize_google(audio_data, language=fallback_lang)
+                except Exception:
+                    return ""
+            except Exception:
+                continue
+        return ""
+    finally:
+        try:
+            if os.path.exists(chunk_path):
+                os.remove(chunk_path)
+        except Exception:
+            pass
+
 def transcribe_audio_file(audio_path: str, lang: str = "ar") -> str:
     if sr is None:
         return "⚠️ SpeechRecognition library not available."
-    wav_path = audio_path + ".wav"
+    seg_id = uuid.uuid4().hex[:8]
+    seg_pattern = str(TEMP_DIR / f"seg_{seg_id}_%04d.wav")
     try:
         cmd = [
             FFMPEG_PATH,
@@ -1303,51 +1330,106 @@ def transcribe_audio_file(audio_path: str, lang: str = "ar") -> str:
             "-ar", "16000",
             "-ac", "1",
             "-threads", "0",
-            wav_path
+            "-f", "segment",
+            "-segment_time", "40",
+            "-reset_timestamps", "1",
+            seg_pattern
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        r = sr.Recognizer()
+        chunk_files = sorted([str(p) for p in TEMP_DIR.glob(f"seg_{seg_id}_*.wav")])
+        if not chunk_files:
+            return "⚠️ Could not extract audio segments." if lang == "en" else "⚠️ تعذر استخراج مقاطع الصوت."
+
         primary_lang = "ar-SA" if lang == "ar" else "en-US"
         fallback_lang = "en-US" if lang == "ar" else "ar-SA"
 
-        with sr.AudioFile(wav_path) as source:
-            total_dur = getattr(source, "DURATION", 0) or 0
-            chunks = []
-            chunk_sec = 40
-            processed = 0
-            while processed < total_dur or processed == 0:
-                audio_data = r.record(source, duration=chunk_sec)
-                if not audio_data.frame_data:
-                    break
+        results = [""] * len(chunk_files)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_idx = {
+                executor.submit(transcribe_single_chunk, cf, primary_lang, fallback_lang): idx
+                for idx, cf in enumerate(chunk_files)
+            }
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
                 try:
-                    part = r.recognize_google(audio_data, language=primary_lang)
-                    if part:
-                        chunks.append(part)
-                except sr.UnknownValueError:
-                    try:
-                        part = r.recognize_google(audio_data, language=fallback_lang)
-                        if part:
-                            chunks.append(part)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    if not chunks:
-                        return f"⚠️ Speech recognition error: {e}"
-                    break
-                processed += chunk_sec
-                if total_dur == 0:
-                    break
+                    results[idx] = future.result() or ""
+                except Exception:
+                    results[idx] = ""
 
-            if chunks:
-                return " ".join(chunks)
-            return "⚠️ Could not clearly recognize speech in the audio." if lang == "en" else "⚠️ تعذر التعرف على الكلام بوضوح في التسجيل."
+        final_parts = [p.strip() for p in results if p and p.strip()]
+        if final_parts:
+            return " ".join(final_parts)
+        return "⚠️ Could not clearly recognize speech in the audio." if lang == "en" else "⚠️ تعذر التعرف على الكلام بوضوح في التسجيل."
     finally:
-        if os.path.exists(wav_path):
+        for leftover in TEMP_DIR.glob(f"seg_{seg_id}_*.wav"):
             try:
-                os.remove(wav_path)
+                os.remove(leftover)
             except Exception:
                 pass
+
+async def send_full_transcript_reply(status_msg, chat_id, context, header_title: str, full_text: str, footer_text: str, file_title: str = "transcript"):
+    safe_text = full_text.replace("`", "'")
+    if len(safe_text) <= 3200:
+        msg = (
+            f"📝 **{header_title}**\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"```text\n{safe_text}\n```\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"{footer_text}"
+        )
+        try:
+            await status_msg.edit_text(msg, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await status_msg.edit_text(f"📝 {header_title}\n\n{full_text}\n\n{footer_text}")
+        return
+
+    # Long transcript (> 3200 chars): split cleanly across messages + send full .txt file!
+    chunk_size = 3400
+    parts = [safe_text[i:i + chunk_size] for i in range(0, len(safe_text), chunk_size)]
+    total_parts = len(parts)
+
+    first_msg = (
+        f"📝 **{header_title}** (الجزء 1 من {total_parts})\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"```text\n{parts[0]}\n```"
+    )
+    try:
+        await status_msg.edit_text(first_msg, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        await status_msg.edit_text(f"📝 {header_title} (1/{total_parts})\n\n{parts[0]}")
+
+    for idx in range(1, total_parts):
+        part_msg = (
+            f"📝 **تكملة النص ({idx + 1} من {total_parts}):**\n"
+            f"```text\n{parts[idx]}\n```"
+        )
+        if idx == total_parts - 1:
+            part_msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{footer_text}"
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=part_msg, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await context.bot.send_message(chat_id=chat_id, text=f"({idx + 1}/{total_parts})\n\n{parts[idx]}")
+
+    # Also send complete .txt file for effortless copying/saving
+    txt_file_path = TEMP_DIR / f"{uuid.uuid4().hex[:6]}_transcript.txt"
+    try:
+        txt_file_path.write_text(f"{header_title}\n{'='*40}\n\n{full_text}", encoding="utf-8")
+        with open(txt_file_path, "rb") as tf:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=tf,
+                filename=f"{re.sub(r'[^a-zA-Z0-9_-]', '_', file_title)[:30] or 'transcript'}.txt",
+                caption="📄 الملف النصي الكامل للنص المستخرج بدون أي اقتطاع."
+            )
+    except Exception as fe:
+        print(f"Transcript txt send note: {fe}", flush=True)
+    finally:
+        try:
+            if txt_file_path.exists():
+                os.remove(txt_file_path)
+        except Exception:
+            pass
 
 async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1380,20 +1462,33 @@ async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     msg = update.message
-    audio_obj = msg.voice or msg.audio or msg.video_note
-    if not audio_obj:
+    media_obj = msg.voice or msg.audio or msg.video_note or msg.video or msg.document
+    if not media_obj:
         return
 
     lang = get_user_lang(user.id)
-    wait_msg = "🎙️ Downloading & transcribing audio with high accuracy..." if lang == "en" else "🎙️ جاري تنزيل وتحويل المقطع الصوتي إلى نص بدقة عالية..."
+    file_size = getattr(media_obj, "file_size", 0) or 0
+    if file_size > 20 * 1024 * 1024:
+        limit_msg = (
+            "⚠️ Telegram limits direct bot file downloads to 20 MB.\n"
+            "💡 For unlimited video/audio sizes and lengths, simply send the video link (YouTube, Facebook, TikTok, etc.)!"
+        ) if lang == "en" else (
+            "⚠️ تليجرام يقيّد تنزيل الملفات المرسلة مباشرة للبوت بحد 20 ميجابايت.\n"
+            "💡 لتحويل أي فيديو أو صوت طويل مهما كان حجمه، أرسل رابط الفيديو مباشرة (يوتيوب، فيسبوك، تيك توك...) وسيقوم البوت بتحويله بالكامل دون أي قيود!"
+        )
+        await msg.reply_text(limit_msg)
+        return
+
+    wait_msg = "🎙️ Extracting & transcribing full content..." if lang == "en" else "🎙️ جاري تنزيل الملف وتفريغ الصوت بالكامل بدقة وسرعة عالية..."
     status = await msg.reply_text(wait_msg)
 
     file_id = uuid.uuid4().hex[:8]
-    ext = ".ogg" if msg.voice else ".mp3"
+    orig_name = getattr(media_obj, "file_name", "") or ""
+    ext = os.path.splitext(orig_name)[1] if orig_name else (".mp4" if (msg.video or msg.video_note) else (".ogg" if msg.voice else ".mp3"))
     input_file = str(TEMP_DIR / f"{file_id}{ext}")
 
     try:
-        tg_file = await audio_obj.get_file()
+        tg_file = await media_obj.get_file()
         await tg_file.download_to_drive(input_file)
 
         loop = asyncio.get_running_loop()
@@ -1407,26 +1502,12 @@ async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if is_admin(user.id):
             pts_display = "♾️"
 
-        if lang == "en":
-            result_msg = (
-                "📝 **Transcribed Text:**\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"```text\n{transcribed}\n```\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                f"💎 Remaining Balance: {pts_display}"
-            )
-        else:
-            result_msg = (
-                "📝 **النص المستخرج من الصوت بدقة:**\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"```text\n{transcribed}\n```\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                f"💎 رصيد محاولاتك المتبقي: {pts_display}"
-            )
-        await status.edit_text(result_msg, parse_mode=ParseMode.MARKDOWN)
+        header_title = "Transcribed Text:" if lang == "en" else "النص المستخرج بالكامل بدقة:"
+        footer_text = f"💎 Remaining Balance: {pts_display}" if lang == "en" else f"💎 رصيد محاولاتك المتبقي: {pts_display}"
+        await send_full_transcript_reply(status, msg.chat_id, context, header_title, transcribed, footer_text, "audio_transcript")
 
     except Exception as e:
-        await status.edit_text(f"❌ Error processing audio: {str(e)[:150]}")
+        await status.edit_text(f"❌ Error processing media: {str(e)[:150]}")
     finally:
         for f in TEMP_DIR.glob(f"{file_id}*"):
             try:
@@ -1505,18 +1586,9 @@ async def process_video_transcription(chat_id, user_id, context, video_data, sta
     pts = get_user_points(user_id)
     pts_display = f"`{pts}`" if not is_admin(user_id) else "♾️"
 
-    header_title = "Transcribed Text from Video" if lang == "en" else "النص المستخرج من الفيديو بدقة"
-    footer = "Remaining attempts:" if lang == "en" else "رصيد محاولاتك المتبقي:"
-
-    response = (
-        f"📝 **{header_title}:**\n"
-        f"🎬 **{video_data['title']}**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"```text\n{transcript_text[:3800]}\n```\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"💎 {footer} `{pts_display}`"
-    )
-    await status_msg.edit_text(response, parse_mode=ParseMode.MARKDOWN)
+    header_title = ("Transcribed Text: " if lang == "en" else "النص المستخرج من الفيديو: ") + str(video_data.get('title', ''))[:60]
+    footer = f"💎 {'Remaining attempts:' if lang == 'en' else 'رصيد محاولاتك المتبقي:'} `{pts_display}`"
+    await send_full_transcript_reply(status_msg, chat_id, context, header_title, transcript_text, footer, video_data.get('title', 'video'))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2151,6 +2223,17 @@ def main():
             context.user_data['state'] = None
             await execute_broadcast(update.message, is_copy=True, context=context, origin_chat_id=update.message.chat_id)
             return
+
+        # Direct Video or Audio/Video Document transcription for users
+        if update.message.video:
+            await handle_audio_message(update, context)
+            return
+        if update.message.document:
+            mime = (update.message.document.mime_type or "").lower()
+            fname = (update.message.document.file_name or "").lower()
+            if mime.startswith("audio/") or mime.startswith("video/") or fname.endswith((".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".mp4", ".mov", ".mkv", ".webm")):
+                await handle_audio_message(update, context)
+                return
 
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, media_support_or_broadcast_catcher))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_or_text))
