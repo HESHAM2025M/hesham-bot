@@ -28,6 +28,12 @@ from telegram.ext import (
 )
 import yt_dlp
 try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except Exception:
+    pass
+
+try:
     import standard_aifc as aifc
     import sys
     sys.modules['aifc'] = aifc
@@ -76,8 +82,12 @@ if raw_cookies_env:
 DEFAULT_CONFIG = {
     "initial_points": 10,
     "points_per_referral": 10,
-    "daily_bonus": 5
+    "daily_bonus": 5,
+    "proxy_url": ""
 }
+
+def get_proxy_url() -> str:
+    return os.environ.get("PROXY_URL") or get_config().get("proxy_url", "")
 
 def load_json(path: Path, default):
     if path.exists():
@@ -677,6 +687,41 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(panel_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
+async def set_proxy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        return
+    if not context.args:
+        cur = get_proxy_url() or "غير محدد ❌"
+        await update.message.reply_text(
+            f"🌐 **البروكسي الحالي:** `{cur}`\n\n"
+            "📌 **لتعيين بروكسي جديد:**\n"
+            "`/setproxy http://username:password@ip:port`\n\n"
+            "📌 **لحذف البروكسي:**\n"
+            "`/removeproxy`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    new_proxy = context.args[0].strip()
+    cfg = get_config()
+    cfg["proxy_url"] = new_proxy
+    save_json(CONFIG_FILE, cfg)
+    await update.message.reply_text(
+        f"✅ **تم ضبط وتفعيل البروكسي بنجاح!**\n\n"
+        f"🌐 `{new_proxy}`\n\n"
+        "سيقوم البوت الآن بجميع عمليات التحميل عبر هذا البروكسي لتجاوز حظر يوتيوب سحابياً.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def remove_proxy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        return
+    cfg = get_config()
+    cfg["proxy_url"] = ""
+    save_json(CONFIG_FILE, cfg)
+    await update.message.reply_text("✅ تم حذف البروكسي بنجاح والعودة للاتصال المباشر.", parse_mode=ParseMode.MARKDOWN)
+
 async def set_daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
@@ -905,16 +950,20 @@ def extract_video_info(url: str):
         'extract_flat': False,
         'socket_timeout': 15,
         'no_check_certificate': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android'],
-                'player_skip': ['webpage', 'configs']
-            }
-        },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     if COOKIE_FILE.exists():
         ydl_opts['cookiefile'] = str(COOKIE_FILE)
+    else:
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['ios', 'android'],
+                'player_skip': ['webpage', 'configs']
+            }
+        }
+    proxy = get_proxy_url()
+    if proxy:
+        ydl_opts['proxy'] = proxy
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         
@@ -1714,16 +1763,20 @@ def download_video_sync(url: str, output_path: str):
         'concurrent_fragment_downloads': 5,
         'buffersize': 1024 * 64,
         'http_chunk_size': 10485760,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android'],
-                'player_skip': ['webpage', 'configs']
-            }
-        },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     if COOKIE_FILE.exists():
         ydl_opts['cookiefile'] = str(COOKIE_FILE)
+    else:
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['ios', 'android'],
+                'player_skip': ['webpage', 'configs']
+            }
+        }
+    proxy = get_proxy_url()
+    if proxy:
+        ydl_opts['proxy'] = proxy
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
@@ -1739,16 +1792,20 @@ def download_mp3_sync(url: str, output_path: str):
         'quiet': True,
         'ffmpeg_location': FFMPEG_PATH,
         'concurrent_fragment_downloads': 5,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android'],
-                'player_skip': ['webpage', 'configs']
-            }
-        },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     if COOKIE_FILE.exists():
         ydl_opts['cookiefile'] = str(COOKIE_FILE)
+    else:
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['ios', 'android'],
+                'player_skip': ['webpage', 'configs']
+            }
+        }
+    proxy = get_proxy_url()
+    if proxy:
+        ydl_opts['proxy'] = proxy
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
@@ -2008,6 +2065,8 @@ def main():
     app.add_handler(CommandHandler("reply", reply_command))
     app.add_handler(CommandHandler("addadmin", add_admin_command))
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
+    app.add_handler(CommandHandler("setproxy", set_proxy_command))
+    app.add_handler(CommandHandler("removeproxy", remove_proxy_command))
     app.add_handler(CommandHandler("setdaily", set_daily_command))
     app.add_handler(CommandHandler("setpoints", set_points_command))
     app.add_handler(CommandHandler("addpoints", add_points_command))
