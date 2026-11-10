@@ -3,6 +3,7 @@ import re
 import sys
 import json
 import uuid
+import shutil
 import asyncio
 import threading
 import subprocess
@@ -30,8 +31,8 @@ import yt_dlp
 try:
     import static_ffmpeg
     static_ffmpeg.add_paths()
-except Exception:
-    pass
+except Exception as e:
+    print(f"static_ffmpeg init note: {e}", flush=True)
 
 try:
     import standard_aifc as aifc
@@ -57,7 +58,8 @@ LOGO_PATH = BASE_DIR / "logo.jpg"
 
 FFMPEG_PATH = r"C:\Users\Alyousifi\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe"
 if not os.path.exists(FFMPEG_PATH):
-    FFMPEG_PATH = "ffmpeg"
+    FFMPEG_PATH = shutil.which("ffmpeg") or "ffmpeg"
+print(f"Using FFmpeg at: {FFMPEG_PATH}", flush=True)
 
 DENO_DIR = r"C:\Users\Alyousifi\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe"
 if os.path.exists(DENO_DIR) and DENO_DIR not in os.environ.get("PATH", ""):
@@ -942,16 +944,12 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("⚠️ اكتب: `/broadcast رسالتك` أو قم بالرد بـ `/broadcast` على أي منشور.", parse_mode=ParseMode.MARKDOWN)
 
-def extract_video_info(url: str):
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'extract_flat': False,
-        'socket_timeout': 15,
-        'no_check_certificate': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    }
+def apply_ydl_common_opts(ydl_opts: dict):
+    ydl_opts['noplaylist'] = True
+    ydl_opts['socket_timeout'] = 15
+    ydl_opts['no_check_certificate'] = True
+    if os.path.exists(FFMPEG_PATH):
+        ydl_opts['ffmpeg_location'] = os.path.dirname(FFMPEG_PATH)
     if COOKIE_FILE.exists():
         ydl_opts['cookiefile'] = str(COOKIE_FILE)
     else:
@@ -964,6 +962,16 @@ def extract_video_info(url: str):
     proxy = get_proxy_url()
     if proxy:
         ydl_opts['proxy'] = proxy
+
+def extract_video_info(url: str):
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'extract_flat': False,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+    apply_ydl_common_opts(ydl_opts)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         
@@ -1281,41 +1289,59 @@ async def handle_url_or_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     hint = "Please send a valid video URL (starting with http/https) or choose from the menu below." if lang == "en" else "يرجى إرسال رابط فيديو صالح (يبدأ بـ http أو https) أو استخدام أزرار القائمة بالأسفل."
     await update.message.reply_text(hint)
 
-# High Accuracy Speech Recognition with Audio Preprocessing
+# High Accuracy Speech Recognition with Chunking & Fast Preprocessing
 def transcribe_audio_file(audio_path: str, lang: str = "ar") -> str:
+    if sr is None:
+        return "⚠️ SpeechRecognition library not available."
     wav_path = audio_path + ".wav"
     try:
         cmd = [
             FFMPEG_PATH,
             "-y",
             "-i", audio_path,
-            "-af", "highpass=f=200,lowpass=f=3500,volume=1.5",
+            "-vn",
             "-ar", "16000",
             "-ac", "1",
+            "-threads", "0",
             wav_path
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         r = sr.Recognizer()
-        r.dynamic_energy_threshold = True
-        r.energy_threshold = 300
+        primary_lang = "ar-SA" if lang == "ar" else "en-US"
+        fallback_lang = "en-US" if lang == "ar" else "ar-SA"
 
         with sr.AudioFile(wav_path) as source:
-            r.adjust_for_ambient_noise(source, duration=0.5)
-            audio_data = r.record(source)
-
-            primary_lang = "ar-SA" if lang == "ar" else "en-US"
-            fallback_lang = "en-US" if lang == "ar" else "ar-SA"
-
-            try:
-                return r.recognize_google(audio_data, language=primary_lang)
-            except sr.UnknownValueError:
+            total_dur = getattr(source, "DURATION", 0) or 0
+            chunks = []
+            chunk_sec = 40
+            processed = 0
+            while processed < total_dur or processed == 0:
+                audio_data = r.record(source, duration=chunk_sec)
+                if not audio_data.frame_data:
+                    break
                 try:
-                    return r.recognize_google(audio_data, language=fallback_lang)
-                except Exception:
-                    return "⚠️ Could not clearly recognize speech in the audio." if lang == "en" else "⚠️ تعذر التعرف على الكلام بوضوح في التسجيل."
-            except Exception as e:
-                return f"⚠️ Speech recognition error: {e}"
+                    part = r.recognize_google(audio_data, language=primary_lang)
+                    if part:
+                        chunks.append(part)
+                except sr.UnknownValueError:
+                    try:
+                        part = r.recognize_google(audio_data, language=fallback_lang)
+                        if part:
+                            chunks.append(part)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    if not chunks:
+                        return f"⚠️ Speech recognition error: {e}"
+                    break
+                processed += chunk_sec
+                if total_dur == 0:
+                    break
+
+            if chunks:
+                return " ".join(chunks)
+            return "⚠️ Could not clearly recognize speech in the audio." if lang == "en" else "⚠️ تعذر التعرف على الكلام بوضوح في التسجيل."
     finally:
         if os.path.exists(wav_path):
             try:
@@ -1417,30 +1443,44 @@ async def process_video_transcription(chat_id, user_id, context, video_data, sta
     if "youtube.com" in url or "youtu.be" in url:
         try:
             if not video_id:
-                m = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})', url)
+                m = re.search(r'(?:v=|\/|shorts\/)([0-9A-Za-z_-]{11})', url)
                 if m:
                     video_id = m.group(1)
 
             if video_id:
-                cookies_arg = str(COOKIE_FILE) if COOKIE_FILE.exists() else None
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ar', 'en', 'auto'], cookies=cookies_arg)
-                if transcript_list:
-                    lines = [item['text'] for item in transcript_list]
-                    transcript_text = " ".join(lines)
-        except Exception:
+                if hasattr(YouTubeTranscriptApi, "get_transcript"):
+                    cookies_arg = str(COOKIE_FILE) if COOKIE_FILE.exists() else None
+                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ar', 'en', 'auto'], cookies=cookies_arg)
+                    if transcript_list:
+                        transcript_text = " ".join([item['text'] for item in transcript_list])
+                else:
+                    def fetch_ytt_sync(vid):
+                        ytt = YouTubeTranscriptApi()
+                        try:
+                            return ytt.fetch(vid, languages=['ar', 'en'])
+                        except Exception:
+                            tlist = ytt.list(vid)
+                            first_t = next(iter(tlist))
+                            return first_t.fetch()
+                    loop = asyncio.get_running_loop()
+                    fetched = await loop.run_in_executor(None, fetch_ytt_sync, video_id)
+                    if fetched:
+                        transcript_text = " ".join([s.text for s in fetched])
+        except Exception as te:
+            print(f"YouTubeTranscriptApi note: {te}", flush=True)
             transcript_text = None
 
     if not transcript_text:
         wait_text = "⏳ Extracting audio track for transcription..." if lang == "en" else "⏳ جاري استخراج مسار الصوت لمعالجته بدقة عالية..."
         await status_msg.edit_text(wait_text)
         file_id = uuid.uuid4().hex[:8]
-        audio_file = str(TEMP_DIR / f"{file_id}.mp3")
+        audio_tmpl = str(TEMP_DIR / f"{file_id}.%(ext)s")
 
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, download_mp3_sync, url, audio_file)
+            await loop.run_in_executor(None, download_raw_audio_sync, url, audio_tmpl)
 
-            found = list(TEMP_DIR.glob(f"{file_id}*.mp3"))
+            found = list(TEMP_DIR.glob(f"{file_id}.*"))
             if found:
                 actual_audio = str(found[0])
                 wait_sub = "🎙️ Transcribing speech to text..." if lang == "en" else "🎙️ جاري تحويل الكلام في الفيديو إلى نص بدقة عالية..."
@@ -1755,28 +1795,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def download_video_sync(url: str, output_path: str):
     ydl_opts = {
-        'format': 'best[filesize<48M]/bestvideo[height<=720]+bestaudio/best[height<=720]/best',
+        'format': 'best[height<=720][ext=mp4][filesize<48M]/best[filesize<48M]/bestvideo[height<=720]+bestaudio/best[height<=720]/best',
         'outtmpl': output_path,
         'merge_output_format': 'mp4',
         'quiet': True,
-        'ffmpeg_location': FFMPEG_PATH,
-        'concurrent_fragment_downloads': 5,
+        'concurrent_fragment_downloads': 8,
         'buffersize': 1024 * 64,
         'http_chunk_size': 10485760,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
-    if COOKIE_FILE.exists():
-        ydl_opts['cookiefile'] = str(COOKIE_FILE)
-    else:
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['ios', 'android'],
-                'player_skip': ['webpage', 'configs']
-            }
-        }
-    proxy = get_proxy_url()
-    if proxy:
-        ydl_opts['proxy'] = proxy
+    apply_ydl_common_opts(ydl_opts)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
@@ -1787,25 +1815,25 @@ def download_mp3_sync(url: str, output_path: str):
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '192',
+            'preferredquality': '128',
         }],
         'quiet': True,
-        'ffmpeg_location': FFMPEG_PATH,
-        'concurrent_fragment_downloads': 5,
+        'concurrent_fragment_downloads': 8,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
-    if COOKIE_FILE.exists():
-        ydl_opts['cookiefile'] = str(COOKIE_FILE)
-    else:
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['ios', 'android'],
-                'player_skip': ['webpage', 'configs']
-            }
-        }
-    proxy = get_proxy_url()
-    if proxy:
-        ydl_opts['proxy'] = proxy
+    apply_ydl_common_opts(ydl_opts)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+
+def download_raw_audio_sync(url: str, output_path: str):
+    ydl_opts = {
+        'format': 'worstaudio[ext=m4a]/bestaudio[ext=m4a]/worstaudio/bestaudio/best',
+        'outtmpl': output_path,
+        'quiet': True,
+        'concurrent_fragment_downloads': 8,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+    apply_ydl_common_opts(ydl_opts)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
@@ -1821,7 +1849,8 @@ def cut_video_sync(input_path: str, output_path: str, start_sec: float, end_sec:
         "-c:a", "aac",
         "-preset", "ultrafast",
         "-threads", "0",
-        "-crf", "24",
+        "-crf", "26",
+        "-movflags", "+faststart",
         output_path
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
