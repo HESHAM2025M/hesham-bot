@@ -53,6 +53,10 @@ FFMPEG_PATH = r"C:\Users\Alyousifi\AppData\Local\Microsoft\WinGet\Packages\Gyan.
 if not os.path.exists(FFMPEG_PATH):
     FFMPEG_PATH = "ffmpeg"
 
+DENO_DIR = r"C:\Users\Alyousifi\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe"
+if os.path.exists(DENO_DIR) and DENO_DIR not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = DENO_DIR + os.pathsep + os.environ["PATH"]
+
 CONFIG_FILE = BASE_DIR / "config.json"
 DATA_FILE = BASE_DIR / "users.json"
 ADMIN_FILE = BASE_DIR / "admin.json"
@@ -1014,7 +1018,7 @@ async def handle_url_or_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     text = update.message.text.strip()
     lang = get_user_lang(user.id)
-    user_state = context.user_data.get('state', '')
+    user_state = context.user_data.get('state') or ""
 
     # --- 0. CANCEL WORD CHECK ---
     if text.lower() in ['/cancel', 'cancel', 'الغاء', 'إلغاء']:
@@ -1134,7 +1138,7 @@ async def handle_url_or_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # --- 1. ADMIN DIRECT REPLY TO A USER (BUTTON MODE OR STATE) ---
-    if is_admin(user.id) and user_state.startswith("admin_replying_to_"):
+    if is_admin(user.id) and user_state and user_state.startswith("admin_replying_to_"):
         target_uid = int(user_state.replace("admin_replying_to_", ""))
         context.user_data['state'] = None
         try:
