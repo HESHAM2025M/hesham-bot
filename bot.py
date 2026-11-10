@@ -58,6 +58,15 @@ SUPPORT_MAP_FILE = BASE_DIR / "support_map.json"
 ADMIN_REPLY_IDS_FILE = BASE_DIR / "admin_reply_ids.json"
 COOKIE_FILE = BASE_DIR / "cookies.txt"
 
+# Auto-load cookies from YOUTUBE_COOKIES environment variable if provided
+raw_cookies_env = os.environ.get("YOUTUBE_COOKIES", "").strip()
+if raw_cookies_env:
+    try:
+        COOKIE_FILE.write_text(raw_cookies_env, encoding="utf-8")
+        logger.info("Loaded YouTube cookies from YOUTUBE_COOKIES environment variable.")
+    except Exception as e:
+        logger.error(f"Failed to write cookies from env: {e}")
+
 DEFAULT_CONFIG = {
     "initial_points": 10,
     "points_per_referral": 10,
@@ -628,6 +637,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_json(DATA_FILE, {})
     total_users = len(users)
     admins = get_admins()
+    cookie_status = "✅ مفعّل وجاهز" if COOKIE_FILE.exists() else "⚠️ غير مرفوع (أرسل ملف cookies.txt للبوت لتفعيله فوراً)"
 
     keyboard = [
         [InlineKeyboardButton("📊 إحصائيات المشتركين ومعرفاتهم", callback_data="admin_stats")],
@@ -643,7 +653,10 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 **إجمالي المستخدمين المسجلين:** `{total_users}` مستخدم\n"
         f"🛡️ **عدد المدراء المعتمدين:** `{len(admins)}`\n"
         f"🌟 **المكافأة اليومية الحالية:** `{get_daily_bonus()}` محاولات/يوم\n"
-        f"🎁 **رصيد المشترك الجديد:** `{get_initial_points()}` محاولات\n\n"
+        f"🎁 **رصيد المشترك الجديد:** `{get_initial_points()}` محاولات\n"
+        f"🍪 **ملف كوكيز يوتيوب:** {cookie_status}\n\n"
+        "📌 **حل يوتيوب الجذري (تخطي حظر السيرفرات):**\n"
+        "• كمدير، يمكنك ببساطة إرسال ملف `cookies.txt` كمستند في هذه المحادثة، وسيقوم البوت بتفعيله فوراً!\n\n"
         "📌 **أوامر التحكم بالرصيد والنقاط:**\n"
         "• `/setdaily <عدد>` : تحديد النقاط اليومية للمستخدمين (مثال: `/setdaily 5` أو `/setdaily 4`).\n"
         "• `/setpoints <User_ID> <نقاط>` : تحديد رصيد مشترك معين مباشرة.\n"
@@ -1354,7 +1367,8 @@ async def process_video_transcription(chat_id, user_id, context, video_data, sta
                     video_id = m.group(1)
 
             if video_id:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ar', 'en', 'auto'])
+                cookies_arg = str(COOKIE_FILE) if COOKIE_FILE.exists() else None
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ar', 'en', 'auto'], cookies=cookies_arg)
                 if transcript_list:
                     lines = [item['text'] for item in transcript_list]
                     transcript_text = " ".join(lines)
@@ -1981,6 +1995,19 @@ def main():
     async def media_support_or_broadcast_catcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         state = context.user_data.get('state', '')
+
+        # Check if admin uploaded cookies.txt directly to the bot
+        if is_admin(user.id) and update.message.document:
+            doc_name = (update.message.document.file_name or "").lower()
+            if "cookie" in doc_name or doc_name.endswith(".txt"):
+                file = await update.message.document.get_file()
+                await file.download_to_drive(custom_path=str(COOKIE_FILE))
+                await update.message.reply_text(
+                    "🍪 ✅ **تم استلام وتفعيل ملف الكوكيز (cookies.txt) بنجاح!**\n\n"
+                    "أصبح بإمكان البوت الآن تحميل جميع مقاطع يوتيوب وتجاوز الحظر فوراً وبدون الحاجة لإعادة تشغيل الخادم.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
 
         # Check if admin is replying to support with media
         if is_admin(user.id) and update.message.reply_to_message:
